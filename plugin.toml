@@ -1,0 +1,12 @@
+[plugin]
+id = "neko_sous"
+name = "NekoSous"
+version = "0.1.0"
+type = "plugin"
+entry = "plugin.plugins.neko_sous:NekoSousPlugin"
+
+[plugin.author]
+name = "沫儿 - Channel"
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
