@@ -7,22 +7,24 @@ import logging
 import math
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import cast
 
 import psutil
-from websockets.asyncio.client import connect
+from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from .events import GameEvents
 from .orders import CATEGORIES
 
 ADDRESS = "ws://127.0.0.1:48930/neko"
+PendingRequests = dict[str, tuple[str, asyncio.Future[dict]]]
 
 
 def _game_running() -> bool:
     uncertain = False
     for process in psutil.process_iter(["name"]):
         try:
-            name = process.info.get("name")
+            name: str | None = process.info.get("name")
             if name and name.casefold() in {"overcooked2.exe", "overcooked2"}:
                 return True
             uncertain |= name is None
@@ -40,15 +42,15 @@ async def game_running() -> bool:
 
 
 class ProtocolError(Exception):
-    def __init__(self, code: str, detail: str = ""):
+    def __init__(self, code: str, detail: str = "") -> None:
         super().__init__(detail or code)
         self.code = code
 
 
 class NekoSousClient:
     def __init__(self, logger=None, *, probe: Callable[[], Awaitable[bool]] = game_running,
-                 on_event: Callable[[dict], Awaitable[None]] | None = None,
-                 on_state: Callable[[dict], None] | None = None, on_reset: Callable[[], None] | None = None):
+                 on_event: Callable[[dict], Awaitable[bool | None]] | None = None,
+                 on_state: Callable[[dict], None] | None = None, on_reset: Callable[[], None] | None = None) -> None:
         self.logger = logger or logging.getLogger(__name__)
         self.probe = probe
         self.on_event = on_event
@@ -59,10 +61,11 @@ class NekoSousClient:
         self.state_supported = False
         self.orders_supported = False
         self.kitchen_supported = False
+        self.mixing_supported = False
         self.subscription_pending = False
         self._subscription_lock = asyncio.Lock()
-        self._pending = None
-        self._events = None
+        self._pending: PendingRequests | None = None
+        self._events: GameEvents | None = None
         self.events_supported = False
         self.events_subscribed = False
         self.last_event: dict | None = None
@@ -76,11 +79,20 @@ class NekoSousClient:
         self.mode = "companion"
         self.mode_supported = False
         self.pending_mode: str | None = None
-        self._mode_future: asyncio.Future | None = None
-        self._commands: asyncio.Queue = asyncio.Queue()
-        self._ws = None
-        self._task: asyncio.Task | None = None
+        self._mode_future: asyncio.Future[bool] | None = None
+        self._commands: asyncio.Queue[tuple[str, asyncio.Future[bool]]] = asyncio.Queue()
+        self._ws: ClientConnection | None = None
+        self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def kitchen_pending(self) -> bool:
+        return self._events is not None and self._events.kitchen_pending()
+
+    async def close_connection(self) -> None:
+        """关闭当前连接，保留现有的自动重连意图。"""
+        if self._ws:
+            await self._ws.close()
 
     def snapshot(self) -> dict:
         return {
@@ -94,6 +106,7 @@ class NekoSousClient:
             "subscription_pending": self.subscription_pending,
             "orders_supported": self.orders_supported,
             "kitchen_supported": self.kitchen_supported,
+            "mixing_supported": self.mixing_supported,
         }
 
     def _reset_mode(self) -> None:
@@ -101,6 +114,7 @@ class NekoSousClient:
         self.state_supported = False
         self.orders_supported = False
         self.kitchen_supported = False
+        self.mixing_supported = False
         self.events_subscribed = False
         self.last_event = None
         if self.on_reset:
@@ -116,13 +130,13 @@ class NekoSousClient:
 
     async def set_mode(self, mode: str) -> dict:
         if mode not in {"companion", "playmate"}:
-            self._error("invalid_mode", f"不支持的模式：{mode}")
+            self.report_error("invalid_mode", f"不支持的模式：{mode}")
         elif self.state != "connected":
-            self._error("not_connected", "请先连接游戏服务端")
+            self.report_error("not_connected", "请先连接游戏服务端")
         elif not self.mode_supported:
-            self._error("mode_not_supported", "当前游戏端未声明模式切换能力，请更新游戏端插件")
+            self.report_error("mode_not_supported", "当前游戏端未声明模式切换能力，请更新游戏端插件")
         elif self.pending_mode is None and mode != self.mode:
-            future = asyncio.get_running_loop().create_future()
+            future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._mode_future = future
             self.pending_mode = mode
             self.last_error = None
@@ -131,7 +145,7 @@ class NekoSousClient:
                 await asyncio.wait_for(asyncio.shield(future), 12)
             except TimeoutError:
                 future.cancel()
-                self._error("mode_timeout", "等待游戏端确认模式超时，将断开并重新同步")
+                self.report_error("mode_timeout", "等待游戏端确认模式超时，将断开并重新同步")
                 if self._ws:
                     await self._ws.close()
             except asyncio.CancelledError:
@@ -147,7 +161,7 @@ class NekoSousClient:
                     self.pending_mode = None
         return self.snapshot()
 
-    def _error(self, code: str, detail: str) -> None:
+    def report_error(self, code: str, detail: str) -> None:
         if self.last_error and self.last_error["code"] == code and self.last_error["detail"] == detail:
             return
         self.last_error = {"id": uuid.uuid4().hex, "code": code, "detail": detail}
@@ -160,7 +174,7 @@ class NekoSousClient:
             return running
         except Exception as exc:
             self.game_state = "unknown"
-            self._error("game_check_failed", f"检测游戏进程失败：{type(exc).__name__}: {exc}")
+            self.report_error("game_check_failed", f"检测游戏进程失败：{type(exc).__name__}: {exc}")
             return None
 
     async def start(self) -> dict:
@@ -168,10 +182,10 @@ class NekoSousClient:
             if self._task and not self._task.done():
                 return self.snapshot()
             running = await self.refresh_game()
-            if running is not True:
+            if not running:
                 self.state = "disconnected"
                 if running is False:
-                    self._error("game_not_running", "请先启动《胡闹厨房 2》后再试")
+                    self.report_error("game_not_running", "请先启动《胡闹厨房 2》后再试")
                 return self.snapshot()
             self.last_error = None
             self.desired = True
@@ -199,7 +213,7 @@ class NekoSousClient:
         return {"version": 1, "type": kind, "id": uuid.uuid4().hex, "payload": payload or {}}
 
     @staticmethod
-    async def _receive(ws, timeout: float | None, *, check_error=True) -> dict:
+    async def _receive(ws: ClientConnection, timeout: float | None, *, check_error: bool = True) -> dict:
         raw = await asyncio.wait_for(ws.recv(), timeout)
         if not isinstance(raw, str):
             raise ProtocolError("protocol_error", "服务端发送了二进制消息")
@@ -228,7 +242,7 @@ class NekoSousClient:
             raise ProtocolError(code if isinstance(code, str) and code in known else "server_error",
                                 str(payload.get("message", code)))
 
-    async def _dispatch(self, ws, pending: dict, events: GameEvents) -> None:
+    async def _dispatch(self, ws: ClientConnection, pending: PendingRequests, events: GameEvents) -> None:
         while True:
             message = await self._receive(ws, None, check_error=False)
             if message.get("type") == "game_state":
@@ -276,10 +290,10 @@ class NekoSousClient:
                         self.on_reset()
                 future.set_result(message)
 
-    async def _request(self, ws, pending: dict, kind: str, expected: str, timeout: float,
+    async def _request(self, ws: ClientConnection, pending: PendingRequests, kind: str, expected: str, timeout: float,
                        payload: dict | None = None) -> dict:
         request = self._message(kind, payload)
-        future = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
         pending[request["id"]] = (expected, future)
         try:
             await ws.send(json.dumps(request))
@@ -289,7 +303,7 @@ class NekoSousClient:
             if not future.done():
                 future.cancel()
 
-    async def _heartbeat(self, ws, pending: dict, interval: float, timeout: float) -> None:
+    async def _heartbeat(self, ws: ClientConnection, pending: PendingRequests, interval: float, timeout: float) -> None:
         while True:
             try:
                 await self._request(ws, pending, "ping", "pong", min(interval, timeout - interval))
@@ -297,7 +311,7 @@ class NekoSousClient:
                 raise ProtocolError("heartbeat_timeout", "等待 pong 心跳响应超时") from exc
             await asyncio.sleep(interval)
 
-    async def _control(self, ws, pending: dict, timeout: float) -> None:
+    async def _control(self, ws: ClientConnection, pending: PendingRequests, timeout: float) -> None:
         if self.events_supported and self.events_enabled:
             await self._apply_subscription(True)
         self.state = "connected"
@@ -314,7 +328,7 @@ class NekoSousClient:
             except ProtocolError as exc:
                 if exc.code not in {"invalid_mode", "unknown_type"}:
                     raise
-                self._error(exc.code, str(exc))
+                self.report_error(exc.code, str(exc))
                 if not future.done():
                     future.set_result(False)
                 continue
@@ -336,13 +350,17 @@ class NekoSousClient:
                     payload["include_orders"] = True
                 if enabled and self.kitchen_supported:
                     payload["include_kitchen"] = True
-                await self._request(self._ws, self._pending, kind, expected, 5, payload)
+                if enabled and self.mixing_supported:
+                    payload["include_mixing"] = True
+                # 仅在会话建立后调用；显式标注由会话初始化保证的非空对象。
+                await self._request(cast(ClientConnection, self._ws), cast(PendingRequests, self._pending),
+                                    kind, expected, 5, payload)
             except TimeoutError as exc:
                 raise ProtocolError("subscription_timeout", "等待游戏事件订阅切换确认超时") from exc
             finally:
                 self.subscription_pending = False
 
-    def configure_events(self, options):
+    def configure_events(self, options: dict[str, bool]) -> None:
         self.event_options = dict(options)
         if self._events is not None:
             self._events.configure(options)
@@ -369,7 +387,7 @@ class NekoSousClient:
                 try:
                     await self.on_event(event)
                 except Exception as exc:
-                    self._error("announcement_failed", f"提交游戏播报失败：{type(exc).__name__}: {exc}")
+                    self.report_error("announcement_failed", f"提交游戏播报失败：{type(exc).__name__}: {exc}")
 
     async def _session(self) -> None:
         async with connect(
@@ -401,11 +419,12 @@ class NekoSousClient:
             self.state_supported = isinstance(capabilities, list) and "game_state" in capabilities
             self.orders_supported = isinstance(capabilities, list) and "order_events" in capabilities
             self.kitchen_supported = isinstance(capabilities, list) and "kitchen_events" in capabilities
+            self.mixing_supported = isinstance(capabilities, list) and "mixing_events" in capabilities
             if self.mode_supported:
                 if payload.get("mode") not in {"companion", "playmate"}:
                     raise ProtocolError("protocol_error", "welcome 缺少有效的当前模式")
                 self.mode = payload["mode"]
-            pending: dict = {}
+            pending: PendingRequests = {}
             events = GameEvents()
             events.configure(self.event_options)
             self._pending = pending
@@ -434,24 +453,24 @@ class NekoSousClient:
             while self.desired:
                 try:
                     running = await self.refresh_game()
-                    if running is not True:
+                    if not running:
                         self.state = "waiting_game"
                         if running is False:
-                            self._error("game_not_running", "游戏已退出，等待游戏重新启动")
+                            self.report_error("game_not_running", "游戏已退出，等待游戏重新启动")
                     else:
                         self.state = "connecting" if delay == 1 else "reconnecting"
                         await self._session()
                 except asyncio.CancelledError:
                     raise
                 except ProtocolError as exc:
-                    self._error(exc.code, str(exc))
+                    self.report_error(exc.code, str(exc))
                 except OSError as exc:
-                    self._error("connection_refused", f"无法连接 {ADDRESS}：{type(exc).__name__}: {exc}")
+                    self.report_error("connection_refused", f"无法连接 {ADDRESS}：{type(exc).__name__}: {exc}")
                 except ConnectionClosed as exc:
-                    self._error("connection_lost", f"WebSocket 连接关闭：{exc}")
+                    self.report_error("connection_lost", f"WebSocket 连接关闭：{exc}")
                 except Exception as exc:
                     self.logger.exception("[NekoSous] WebSocket 客户端异常")
-                    self._error("connection_failed", f"{type(exc).__name__}: {exc}")
+                    self.report_error("connection_failed", f"{type(exc).__name__}: {exc}")
                 finally:
                     self._ws = None
                     self._reset_mode()

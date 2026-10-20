@@ -5,14 +5,15 @@ import asyncio
 import math
 from collections import deque
 from time import monotonic
+from typing import cast
 
-from .kitchen import KITCHEN_EVENTS, KitchenFeedback, valid_object
+from .kitchen import KITCHEN_EVENTS, MIXING_EVENTS, KitchenFeedback, valid_object
 from .orders import ORDER_EVENTS, OrderFeedback
 
 
 class GameEvents:
-    def __init__(self):
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[tuple[float, dict]] = asyncio.Queue(maxsize=16)
         self._seen: deque[str] = deque(maxlen=256)
         self._retired: deque[str] = deque(maxlen=64)
         self._scene = ""
@@ -22,20 +23,20 @@ class GameEvents:
         self._orders = OrderFeedback()
         self._kitchen = KitchenFeedback()
 
-    def configure(self, enabled):
+    def configure(self, enabled: dict[str, bool]) -> None:
         self._orders.configure(enabled)
         self._kitchen.configure(enabled)
 
-    def kitchen_pending(self):
+    def kitchen_pending(self) -> bool:
         return self._kitchen.has_pending()
 
-    def clear(self):
+    def clear(self) -> None:
         self._orders.reset()
         self._kitchen.clear()
         while not self.queue.empty():
             self.queue.get_nowait()
 
-    def update_state(self, state: dict):
+    def update_state(self, state: dict) -> None:
         self._kitchen.update_state(state)
         if state.get("in_round") is True and state.get("phase") == "playing":
             return
@@ -59,13 +60,17 @@ class GameEvents:
                 return False
         if payload.get("round_id") is not None and not isinstance(payload["round_id"], str):
             return False
-        if name != "scene_ready":
-            if not isinstance(payload.get("round_id"), str) or not 0 < len(payload["round_id"]) <= 128:
-                return False
+        if name != "scene_ready" and (not isinstance(payload.get("round_id"), str)
+                                      or not 0 < len(payload["round_id"]) <= 128):
+            return False
         for key in ("duration_seconds", "remaining_seconds", "elapsed_seconds"):
             value = payload.get(key)
-            if value is not None and (type(value) not in (int, float) or not 0 <= value <= 1e9
-                                      or not math.isfinite(value)):
+            if value is None:
+                continue
+            if type(value) not in (int, float):
+                return False
+            number = cast(int | float, value)
+            if not 0 <= number <= 1e9 or not math.isfinite(number):
                 return False
         for key in ("score", "other_score", "recipe_count", "stars"):
             value = payload.get(key)
@@ -97,28 +102,35 @@ class GameEvents:
         if name in KITCHEN_EVENTS:
             if payload.get("in_round") is not True or payload.get("phase") != "playing":
                 return False
-            if not valid_object(payload, fire=name == "fire_started"):
+            mixing = name in MIXING_EVENTS
+            if not valid_object(payload, fire=name == "fire_started", mixing=mixing):
                 return False
             if name == "fire_started" and payload["on_fire"] is not True:
                 return False
             if name != "fire_started":
-                expected = {"completed", "overdoing"} if name == "food_ready" else {"overdoing"}
-                if payload["on_heat"] is not True or payload["cooking_state"] not in expected:
+                expected = ({"ruined"} if name == "mixing_ruined" else {"completed", "overdoing"}
+                            if name in {"food_ready", "mixing_ready"} else {"overdoing"})
+                if payload["mixing_state" if mixing else "cooking_state"] not in expected:
+                    return False
+                if name != "mixing_ruined" and payload["on_mixer" if mixing else "on_heat"] is not True:
                     return False
         timer = payload.get("timer_kind")
         if timer is not None and (not isinstance(timer, str) or timer not in {"countdown", "modifiable", "unlimited"}):
             return False
         if name == "time_warning":
             threshold = payload.get("threshold_seconds")
-            remaining = payload.get("remaining_seconds")
             if type(threshold) is not int or threshold not in (10, 30):
                 return False
-            if remaining is None or not 0 < remaining <= threshold:
+            remaining_value = payload.get("remaining_seconds")
+            if remaining_value is None:
+                return False
+            threshold = cast(int, threshold)
+            remaining = cast(int | float, remaining_value)
+            if not 0 < remaining <= threshold:
                 return False
             if threshold == 30 and remaining <= 10:
                 return False
-            if payload.get("in_round") is not True:
-                return False
+            return payload.get("in_round") is True
         elif payload.get("threshold_seconds") is not None:
             return False
         return True
@@ -169,19 +181,23 @@ class GameEvents:
         return True
 
     async def next(self) -> dict:
-        while True:
+        result: dict | None = None
+        while result is None:
             if self.queue.empty():
                 feedback = self._kitchen.pop(urgent=True)
                 if feedback:
-                    return feedback
+                    result = feedback
+                    continue
                 if not self._kitchen.has_urgent():
-                    feedback = self._orders.pop() or self._kitchen.pop(urgent=False)
-                    if feedback:
-                        return feedback
+                    order_feedback = self._orders.pop() or self._kitchen.pop(urgent=False)
+                    if order_feedback:
+                        result = order_feedback
+                        continue
             try:
                 received, event = await asyncio.wait_for(self.queue.get(), .25)
             except TimeoutError:
                 continue
             lifetime = 2 if event["event"] == "time_warning" else 5
             if monotonic() - received <= lifetime:
-                return event
+                result = event
+        return result

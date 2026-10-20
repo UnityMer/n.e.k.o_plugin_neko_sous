@@ -11,7 +11,7 @@ def test_plugin_manifest_exists() -> None:
     assert 'entry = "plugin.plugins.neko_sous:NekoSousPlugin"' in text
 
 
-def test_source_discovery_keeps_ui_actions_without_importing_plugin():
+def test_source_discovery_keeps_ui_actions_without_importing_plugin() -> None:
     from plugin.core.registry import _extract_entries_preview
     from plugin.server.application.plugins.ui_query_service import _entry_ids_from_meta
 

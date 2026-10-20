@@ -6,9 +6,9 @@ type State = {
   address?: string; game_state?: string; connection_state?: string; desired?: boolean;
   session_id?: string; server_version?: string; retry_in?: number; last_error?: Problem | null;
   mode?: string; mode_supported?: boolean; pending_mode?: string | null;
-  events_supported?: boolean; events_subscribed?: boolean; state_supported?: boolean; kitchen_supported?: boolean;
+  events_supported?: boolean; events_subscribed?: boolean; state_supported?: boolean; kitchen_supported?: boolean; mixing_supported?: boolean;
   subscription_pending?: boolean; settings_pending?: boolean;
-  settings?: { events_enabled: boolean; chatter_enabled: boolean; frequency: string; delivery_enabled?: boolean; expiry_enabled?: boolean; failure_enabled?: boolean; combo_enabled?: boolean; fire_enabled?: boolean; ready_enabled?: boolean; overcooking_enabled?: boolean };
+  settings?: { events_enabled: boolean; chatter_enabled: boolean; frequency: string; delivery_enabled?: boolean; expiry_enabled?: boolean; failure_enabled?: boolean; combo_enabled?: boolean; fire_enabled?: boolean; ready_enabled?: boolean; overcooking_enabled?: boolean; mixing_ready_enabled?: boolean; mixing_warning_enabled?: boolean; mixing_ruined_enabled?: boolean };
 }
 
 const styles = `
@@ -172,10 +172,11 @@ export default function NekoSousPanel(props: PluginSurfaceProps<State>) {
               onClick={() => act("update_settings", { events_enabled: !settings.events_enabled })}><span /></button>
           </div>
           <div className="sous-label">{t("settings.categories")}</div>
-          {["delivery", "expiry", "failure", "combo", "fire", "ready", "overcooking"].map(key => {
-            const setting = `${key}_enabled` as "delivery_enabled" | "expiry_enabled" | "failure_enabled" | "combo_enabled" | "fire_enabled" | "ready_enabled" | "overcooking_enabled"
+          {["delivery", "expiry", "failure", "combo", "fire", "ready", "overcooking", "mixing_ready", "mixing_warning", "mixing_ruined"].map(key => {
+            const setting = `${key}_enabled` as "delivery_enabled" | "expiry_enabled" | "failure_enabled" | "combo_enabled" | "fire_enabled" | "ready_enabled" | "overcooking_enabled" | "mixing_ready_enabled" | "mixing_warning_enabled" | "mixing_ruined_enabled"
             const enabled = settings[setting] !== false
-            const unsupported = ["fire", "ready", "overcooking"].includes(key) && connection === "connected" && !state.kitchen_supported
+            const unsupported = connection === "connected" && ((["fire", "ready", "overcooking"].includes(key) && !state.kitchen_supported)
+              || (key.startsWith("mixing_") && !state.mixing_supported))
             return <div className="sous-setting-row" key={key}>
               <div><div className="sous-label">{t(`settings.${key}`)}</div>
                 <div className="sous-caption">{t(`settings.${key}Hint`)}</div></div>
@@ -185,6 +186,7 @@ export default function NekoSousPanel(props: PluginSurfaceProps<State>) {
             </div>
           })}
           {connection === "connected" && !state.kitchen_supported && <div className="sous-caption">{t("settings.upgradeKitchen")}</div>}
+          {connection === "connected" && !state.mixing_supported && <div className="sous-caption">{t("settings.upgradeMixing")}</div>}
           <div className="sous-label">{t("settings.conversation")}</div>
           <div className="sous-setting-row">
             <div><div className="sous-label">{t("settings.chatter")}</div><div className="sous-caption">{t("settings.chatterHint")}</div></div>

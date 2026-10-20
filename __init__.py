@@ -11,17 +11,17 @@ from .orders import CATEGORIES, category
 
 @neko_plugin
 class NekoSousPlugin(NekoPluginBase):
-    def __init__(self, ctx):
+    def __init__(self, ctx) -> None:
         super().__init__(ctx)
         self._announcer = Announcer(self.i18n, self.push_message, self.logger)
         self._companion = Companion()
         self._client = NekoSousClient(self.logger, on_event=self._on_game_event,
                                       on_state=self._companion.observe, on_reset=self._companion.reset)
-        self._options = {}
+        self._options: dict = {}
         self._settings_lock = asyncio.Lock()
         self._settings_pending = False
-        self._companion_task = None
-        self._companion_skip = None
+        self._companion_task: asyncio.Task[None] | None = None
+        self._companion_skip: str | None = None
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -38,7 +38,7 @@ class NekoSousPlugin(NekoPluginBase):
         # No connection exists until the user clicks Connect.
         return Ok({"status": "ready"})
 
-    async def _on_game_event(self, event: dict):
+    async def _on_game_event(self, event: dict) -> bool:
         if self._client.events_subscribed:
             kind = category(event)
             if kind and not self._client.event_options[kind]:
@@ -49,7 +49,7 @@ class NekoSousPlugin(NekoPluginBase):
             return accepted
         return False
 
-    def _snapshot(self):
+    def _snapshot(self) -> dict:
         return {**self._client.snapshot(), "settings_pending": self._settings_pending,
                 "companion": {**self._companion.status(), "last_skip": self._companion_skip,
                               "task_running": self._companion_task is not None and not self._companion_task.done()},
@@ -57,7 +57,7 @@ class NekoSousPlugin(NekoPluginBase):
                              "chatter_enabled": self._companion.enabled, "frequency": self._companion.frequency,
                              **{f"{key}_enabled": value for key, value in self._client.event_options.items()}}}
 
-    async def _companion_loop(self):
+    async def _companion_loop(self) -> None:
         while True:
             await asyncio.sleep(1)
             if not (self._client.state == "connected" and self._client.events_subscribed
@@ -65,7 +65,7 @@ class NekoSousPlugin(NekoPluginBase):
                 continue
             if self._companion.candidate() is None:
                 continue
-            if self._client._events and self._client._events.kitchen_pending():
+            if self._client.kitchen_pending:
                 continue
             try:
                 low = FREQUENCIES[self._companion.frequency][0]
@@ -78,7 +78,7 @@ class NekoSousPlugin(NekoPluginBase):
                     continue
                 event = self._companion.candidate()
                 if (event and self._client.events_subscribed and not self._settings_pending
-                        and not (self._client._events and self._client._events.kitchen_pending())
+                        and not self._client.kitchen_pending
                         and await self._on_game_event(event)):
                     self._companion.spoke(event)
                     self._companion_skip = None
@@ -110,22 +110,27 @@ class NekoSousPlugin(NekoPluginBase):
                       "failure_enabled": {"type": "boolean"}, "combo_enabled": {"type": "boolean"},
                       "fire_enabled": {"type": "boolean"}, "ready_enabled": {"type": "boolean"},
                       "overcooking_enabled": {"type": "boolean"},
+                      "mixing_ready_enabled": {"type": "boolean"}, "mixing_warning_enabled": {"type": "boolean"},
+                      "mixing_ruined_enabled": {"type": "boolean"},
                       "frequency": {"type": "string", "enum": ["quiet", "balanced", "lively"]}}})
     async def update_settings(self, events_enabled: bool | None = None, chatter_enabled: bool | None = None,
                               frequency: str | None = None, delivery_enabled: bool | None = None,
                               expiry_enabled: bool | None = None, failure_enabled: bool | None = None,
                               combo_enabled: bool | None = None, fire_enabled: bool | None = None,
-                              ready_enabled: bool | None = None, overcooking_enabled: bool | None = None, **_):
+                              ready_enabled: bool | None = None, overcooking_enabled: bool | None = None,
+                              mixing_ready_enabled: bool | None = None, mixing_warning_enabled: bool | None = None,
+                              mixing_ruined_enabled: bool | None = None, **_):
         choices = dict(delivery=delivery_enabled, expiry=expiry_enabled, failure=failure_enabled, combo=combo_enabled,
-                       fire=fire_enabled, ready=ready_enabled, overcooking=overcooking_enabled)
+                       fire=fire_enabled, ready=ready_enabled, overcooking=overcooking_enabled,
+                       mixing_ready=mixing_ready_enabled, mixing_warning=mixing_warning_enabled, mixing_ruined=mixing_ruined_enabled)
         async with self._settings_lock:
             if any(value is not None and type(value) is not bool for value in choices.values()):
-                self._client._error("invalid_settings", "事件设置参数无效")
+                self._client.report_error("invalid_settings", "事件设置参数无效")
                 return Ok(self._snapshot())
             if ((events_enabled is not None and type(events_enabled) is not bool)
                     or (chatter_enabled is not None and type(chatter_enabled) is not bool)
                     or (frequency is not None and (not isinstance(frequency, str) or frequency not in FREQUENCIES))):
-                self._client._error("invalid_settings", "陪伴设置参数无效")
+                self._client.report_error("invalid_settings", "陪伴设置参数无效")
                 return Ok(self._snapshot())
             previous = self._client.events_enabled
             desired = previous if events_enabled is None else events_enabled
@@ -133,13 +138,16 @@ class NekoSousPlugin(NekoPluginBase):
             try:
                 if desired != previous:
                     await self._client.set_subscription(desired)
+                event_options: dict[str, bool] = {
+                    key: self._client.event_options[key] if value is None else value
+                    for key, value in choices.items()
+                }
                 options = {**self._options, "events_enabled": desired,
                            "chatter_enabled": self._companion.enabled if chatter_enabled is None else chatter_enabled,
                            "frequency": frequency or self._companion.frequency,
-                           **{f"{key}_enabled": self._client.event_options[key] if value is None else value
-                              for key, value in choices.items()}}
+                           **{f"{key}_enabled": value for key, value in event_options.items()}}
                 await self.config.set("broadcast", options)
-                self._client.configure_events({key: options[f"{key}_enabled"] for key in CATEGORIES})
+                self._client.configure_events(event_options)
                 self._options = options
                 self._companion.enabled = options["chatter_enabled"]
                 self._companion.frequency = options["frequency"]
@@ -151,10 +159,9 @@ class NekoSousPlugin(NekoPluginBase):
                         await self._client.set_subscription(previous)
                     except Exception as rollback:
                         self.logger.warning(f"[NekoSous] 恢复事件订阅失败：{rollback}")
-                        if self._client._ws:
-                            await self._client._ws.close()
+                        await self._client.close_connection()
                     self._client.events_enabled = previous
-                self._client._error(getattr(exc, "code", "settings_failed"), f"保存陪伴设置失败：{exc}")
+                self._client.report_error(getattr(exc, "code", "settings_failed"), f"保存陪伴设置失败：{exc}")
             finally:
                 self._settings_pending = False
             return Ok(self._snapshot())

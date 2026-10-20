@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import math
+from typing import cast
 
 from .kitchen import KITCHEN_EVENTS
 
 
 class Announcer:
-    def __init__(self, i18n, push, logger):
+    def __init__(self, i18n, push, logger) -> None:
         self.i18n = i18n
         self.push = push
         self.logger = logger
@@ -15,8 +16,8 @@ class Announcer:
         self.enabled = True
 
     def text(self, event: dict) -> str | None:
-        def t(key, **params):
-            return self.i18n.t(key, locale=self.locale, **params)
+        def t(translation_key: str, **params) -> str:
+            return self.i18n.t(translation_key, locale=self.locale, **params)
 
         name = event["event"]
         if name in KITCHEN_EVENTS:
@@ -30,7 +31,7 @@ class Announcer:
                 details.append(t("broadcast.chatChange", change=event["score_change"]))
             remaining = event.get("remaining_seconds")
             if remaining is not None:
-                details.append(t("broadcast.chatRemaining", seconds=math.ceil(remaining)))
+                details.append(t("broadcast.chatRemaining", seconds=math.ceil(cast(int | float, remaining))))
             return t("broadcast.chatCue", facts=t("broadcast.separator").join(details))
         if name in {"first_delivery", "delivery_streak", "order_problem", "combo_broken"}:
             details = []
@@ -53,8 +54,8 @@ class Announcer:
             if "load" in scene:
                 return None
             scenes = {
-                "worldmap": "worldMap", "mainmenu": "mainMenu", "frontend": "mainMenu",
-                "party_lobby": "lobby", "partylobby": "lobby", "vslobby": "lobby",
+                "worldmap": "worldMap", "MainMenu".casefold(): "mainMenu", "frontend": "mainMenu",
+                "party_lobby": "lobby", "PartyLobby".casefold(): "lobby", "VsLobby".casefold(): "lobby",
             }
             key = scenes.get(scene)
             if key is None and event.get("timer_kind") in {"countdown", "modifiable", "unlimited"}:
@@ -68,7 +69,7 @@ class Announcer:
             if event.get("timer_kind") == "unlimited":
                 details.append(t("broadcast.unlimited"))
             elif duration is not None:
-                minutes, seconds = divmod(math.ceil(duration), 60)
+                minutes, seconds = divmod(math.ceil(cast(int | float, duration)), 60)
                 details.append(t("broadcast.duration", minutes=minutes, seconds=seconds))
             if event.get("recipe_count") is not None:
                 details.append(t("broadcast.recipes", count=event["recipe_count"]))
@@ -89,7 +90,7 @@ class Announcer:
             return None
         return t("broadcast.cue", facts=facts)
 
-    def announce(self, event: dict):
+    def announce(self, event: dict) -> bool:
         if not self.enabled:
             return False
         text = self.text(event)

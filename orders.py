@@ -9,7 +9,7 @@ from .kitchen import KITCHEN_EVENTS
 CATEGORIES = ("delivery", "expiry", "failure", "combo", *KITCHEN_EVENTS.values())
 
 
-def category(event):
+def category(event: dict) -> str | None:
     name = event["event"]
     if name in KITCHEN_EVENTS:
         return KITCHEN_EVENTS[name]
@@ -22,7 +22,7 @@ def category(event):
     return None
 
 
-def milestone(count):
+def milestone(count: int) -> bool:
     return count in (3, 6, 10) or (count > 10 and (count - 10) % 4 == 0)
 
 
@@ -30,18 +30,31 @@ ORDER_EVENTS = {"order_delivered", "delivery_failed", "order_expired"}
 
 
 class OrderFeedback:
-    def __init__(self):
+    _deliveries: deque[dict]
+    _expired: deque[dict]
+    _milestones: set[tuple[str, str | int]]
+    _last_spoken: float
+    _last_break: float
+    _pending: dict | None
+    _due: float
+    _expires: float
+
+    def __init__(self) -> None:
         self.enabled = dict.fromkeys(CATEGORIES, True)
         self.reset()
 
-    def configure(self, enabled):
+    def configure(self, enabled: dict[str, bool]) -> None:
         self.enabled = dict(enabled)
-        self._expired = deque(e for e in self._expired if self.enabled[category(e)])
-        self._deliveries = deque(e for e in self._deliveries if self.enabled[category(e)])
-        if self._pending and not self.enabled[category(self._pending)]:
-            self._pending = None
+        if not self.enabled["expiry"]:
+            self._expired.clear()
+        if not self.enabled["delivery"]:
+            self._deliveries.clear()
+        if self._pending:
+            kind = category(self._pending)
+            if kind is not None and not self.enabled[kind]:
+                self._pending = None
 
-    def reset(self):
+    def reset(self) -> None:
         self._deliveries = deque()
         self._expired = deque()
         self._milestones = set()
@@ -49,7 +62,7 @@ class OrderFeedback:
         self._last_break = -1000.0
         self.clear_pending()
 
-    def clear_pending(self, *, keep_required=False):
+    def clear_pending(self, *, keep_required: bool = False) -> None:
         if not keep_required:
             self._expired.clear()
             self._deliveries.clear()
@@ -57,7 +70,7 @@ class OrderFeedback:
         self._due = 0.0
         self._expires = 0.0
 
-    def add(self, event: dict):
+    def add(self, event: dict) -> None:
         if event["event"] == "order_expired":
             team = event["team"]
             self._milestones = {item for item in self._milestones if item[0] != team or item[1] == "first"}
