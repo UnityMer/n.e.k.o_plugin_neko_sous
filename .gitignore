@@ -16,3 +16,5 @@ store.db
 .env
 .DS_Store
 .idea/
+.uv-cache/
+.preview/
