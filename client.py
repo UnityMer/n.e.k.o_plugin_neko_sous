@@ -9,36 +9,15 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import cast
 
-import psutil
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from .events import GameEvents
 from .orders import CATEGORIES
+from .process import game_running
 
 ADDRESS = "ws://127.0.0.1:48930/neko"
 PendingRequests = dict[str, tuple[str, asyncio.Future[dict]]]
-
-
-def _game_running() -> bool:
-    uncertain = False
-    for process in psutil.process_iter(["name"]):
-        try:
-            name: str | None = process.info.get("name")
-            if name and name.casefold() in {"overcooked2.exe", "overcooked2"}:
-                return True
-            uncertain |= name is None
-        except psutil.NoSuchProcess:
-            continue
-        except psutil.AccessDenied:
-            uncertain = True
-    if uncertain:
-        raise PermissionError("部分进程名称无法读取，无法确认游戏是否启动")
-    return False
-
-
-async def game_running() -> bool:
-    return await asyncio.to_thread(_game_running)
 
 
 class ProtocolError(Exception):

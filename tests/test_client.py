@@ -3,9 +3,10 @@ import json
 from contextlib import asynccontextmanager
 
 import pytest
+from websockets.asyncio.server import serve
+
 from plugin.plugins.neko_sous import client as module
 from plugin.plugins.neko_sous.client import NekoSousClient
-from websockets.asyncio.server import serve
 
 
 async def running():
@@ -194,14 +195,6 @@ def test_error_deduplication():
     error_id = client.last_error["id"]
     client.report_error("connection_lost", "closed")
     assert client.last_error["id"] == error_id
-
-
-def test_process_name_check(monkeypatch):
-    class Process:
-        def __init__(self):
-            self.info = {"name": "Overcooked2.exe"}
-    monkeypatch.setattr(module.psutil, "process_iter", lambda attrs: [Process()])
-    assert module._game_running()
 
 
 def test_locales_cover_all_backend_errors_and_states():
