@@ -3,10 +3,9 @@ import json
 from contextlib import asynccontextmanager
 
 import pytest
-from websockets.asyncio.server import serve
-
 from plugin.plugins.neko_sous import client as module
 from plugin.plugins.neko_sous.client import NekoSousClient
+from websockets.asyncio.server import serve
 
 
 async def running():

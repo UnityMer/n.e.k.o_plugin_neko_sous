@@ -1,7 +1,6 @@
 import ctypes
 
 import pytest
-
 from plugin.plugins.neko_sous import process
 
 
