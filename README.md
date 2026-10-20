@@ -3,7 +3,57 @@
 N.E.K.O 的《胡闹厨房 2》连接面板。通过 Hosted TSX 面板手动连接游戏端
 `ws://127.0.0.1:48930/neko`，提供中英双语界面、游戏进程状态、握手、心跳和断线重连。
 
-## 使用
+## 兼容范围
+
+| 项目 | 当前范围 |
+| --- | --- |
+| 系统 | 已在 Windows 上联调；暂不支持其他系统的游戏进程检测 |
+| 游戏 | 《胡闹厨房 2》Windows 版；不适用于初代或《全都好吃》 |
+| 游戏运行环境 | 已验证 BepInEx 5.4.23.5、Unity 2017.4.8.5945332；其他组合尚未验证 |
+| N.E.K.O | 需要支持 Hosted TSX、配置持久化及公开消息推送接口的版本 |
+| 插件 SDK | 清单支持 `>=0.1.0,<0.3.0`，推荐 `>=0.1.0,<0.2.0`；不是逐版本实测保证 |
+| Python | 声明要求 3.11 及以上，本地验证使用 3.11 |
+| 通信 | 协议版本 1，两端运行在同一台电脑；不支持跨电脑连接 |
+
+两端当前版本均为 `0.1.0`，具体功能按服务端握手声明的能力启用，不能只看版本号。
+部分基础及 DLC 关卡已完成联调，不代表所有关卡、商店版本和多人联机角色均已验证。
+当前两种模式均不操作游戏角色或设备。
+
+## 安装游戏端
+
+需要同时安装游戏内的 NekoSous 服务端和 N.E.K.O 中的 neko_sous 客户端。
+[游戏端源码及说明](https://gitee.com/merchannel/neko-sous-b)位于独立仓库。
+这是源码链接，不保证已有可下载的发行包；无发行包时需按游戏端说明构建。
+
+1. 关闭游戏，将与游戏架构匹配的 BepInEx 5 安装到包含 `Overcooked2.exe` 的游戏目录。
+2. 启动一次游戏，确认 BepInEx 正常加载并生成目录，然后退出。
+3. 将游戏端 DLL 和随附依赖按下面的结构放置。使用本项目为游戏环境编译的
+   `websocket-sharp.dll`，不要随意换成其他框架版本。
+
+   ```text
+   Overcooked! 2/
+   ├── Overcooked2.exe
+   └── BepInEx/
+       └── plugins/
+           ├── NekoSous.dll
+           └── NekoSous.Dependencies/
+               ├── websocket-sharp.dll
+               └── websocket-sharp.LICENSE.txt
+   ```
+
+4. 启动游戏，在 `BepInEx/LogOutput.log` 中确认 Hook 初始化无失败，并出现
+   `开始监听：ws://127.0.0.1:48930/neko`。
+
+普通安装不需要 Script Engine。开发热重载时可将 `NekoSous.dll` 放在 `BepInEx/scripts/`，
+不要同时在 `scripts/` 和 `plugins/` 保留两份插件 DLL。
+首次加载后检查 `BepInEx/config/unitymer.oc2.nekosous.cfg` 的 `[WebSocket]`：
+`Enabled = true`、`Port = 48930`。游戏端允许修改端口，但当前客户端地址固定，修改后将无法连接。
+服务只监听本机回环地址，无需开放局域网端口，同一时间只允许一个客户端。
+
+## 安装与使用客户端
+
+通过 N.E.K.O 插件管理器安装可用的 `neko_sous` 插件包。
+源码开发目录为 `N.E.K.O/plugin/plugins/neko_sous/`，目录本身是独立 Git 仓库。
 
 当前支持 Windows。游戏进程通过 Python 标准库 `ctypes` 调用 Windows 进程快照接口检测，
 无需安装 `psutil`，不读取游戏内存。不支持的平台会显示检测不可用，不会误报游戏未启动。
@@ -54,12 +104,14 @@ N.E.K.O 的《胡闹厨房 2》连接面板。通过 Hosted TSX 面板手动连�
 
 场景只使用已确认的本地化分类，未知场景不直接念资源名，也不根据内部关卡 ID 猜测关卡编号。
 插件按事件 ID、本局 ID 和事件阶段去重；新场景、新局或结算会清理过时的待播报事件。
-本地排队超过 2 秒的提醒、超过 5 秒的其他事件会丢弃。断线后丢弃队列，重连重新订阅，
+基础事件中，本地排队超过 2 秒的倒计时提醒、超过 5 秒的其他事件会丢弃；
+订单及厨房事件使用下述独立规则。断线后丢弃队列，重连重新订阅，
 不回放上次会话的数据。
 
 播报通过公开 SDK 的 `push_message(parts=..., visibility=[], ai_behavior="respond")`
-将事实交给当前角色自然表达，不把技术消息直接显示成用户聊天。共享 `coalesce_key`
-让宿主在忙碌时合并尚未处理的旧提示。SDK 返回的 `submitted` 仅表示本地提交成功，
+将事实交给当前角色自然表达，不把技术消息直接显示成用户聊天。基础事件共享 `coalesce_key`，
+让宿主在忙碌时合并尚未处理的旧提示；需要保留的订单节点和厨房提醒使用独立标识。
+SDK 返回的 `submitted` 仅表示本地提交成功，
 不代表模型已回复或语音已播放；已经交给宿主的消息及正在播放的语音无法由本插件撤回。
 需要 N.E.K.O 当前角色和语音链路正常工作。
 
@@ -99,7 +151,8 @@ locale = "zh-CN" # 可选 zh-CN、en；与面板语言独立
 已提交宿主的消息仍受上述不可撤回限制。
 
 搭话只参考当前分数、这段时间的分数变化和剩余时间，不推测失误、漏单、火情或画面内容。
-普通搭话和关键事件共用宿主的合并键，关键事件到达会延后普通搭话，结算或退出会清理
+普通搭话与基础事件、普通订单反馈共用 `neko_sous_game` 合并键；漏单、出餐节点和厨房提醒
+使用按事件 ID 生成的独立合并键，避免被普通消息覆盖。实际提交事件播报会延后普通搭话，结算或退出会清理
 本地旧提醒。每局次数不会因为切换开关或重连而立即重置；新局建立新的计数。
 
 ### 出餐、交付失败和超时反馈
@@ -114,6 +167,7 @@ locale = "zh-CN" # 可选 zh-CN、en；与面板语言独立
 
 出餐鼓励为本局每队首次成功出餐、连续成功 3 / 6 / 10 单，之后在 14 / 18 / 22……单触发。
 这些节点和每次漏单都独立排队，不受普通反馈的冷却、5 秒过期及最后 35 秒限制。
+这不保证语音立即播出；结算、退出等清理发生后不会继续补播本地积压内容。
 倒计时提醒优先，随后继续处理待播报节点。结算、退出、断线或取消订阅清理旧内容。
 连单中断仍是有效出餐，不归为交付失败。
 判定同时使用服务器结果中的 `was_combo` 和处理前后的 combo、multiplier，确认之前有加成
@@ -121,7 +175,7 @@ locale = "zh-CN" # 可选 zh-CN、en；与面板语言独立
 交付失败保留普通反馈的 20 秒冷却；连单中断有独立的 20 秒冷却。
 交付失败在 2 秒窗口内合并，等待超过 5 秒的旧提示会丢弃。
 每次订单超时单独排队播报，不受 20 秒冷却、5 秒过期和最后 35 秒限制；倒计时提醒优先处理后继续播报漏单。
-漏单和出餐节点使用各自独立的消息合并标识，避免被后续消息覆盖。
+漏单和出餐节点使用按事件 ID 生成的消息合并标识，避免被后续消息覆盖。
 结算、退出及取消订阅会清理待反馈内容，最后 35 秒停止普通订单反馈。
 普通搭话按实际成功提交的事件播报让出时间，关闭分类的原始事件不推迟搭话。
 最近一分钟每多一次事件播报，下一次搭话间隔增加 25%，最多翻倍；每次播报重新安排空档。
@@ -137,12 +191,15 @@ locale = "zh-CN" # 可选 zh-CN、en；与面板语言独立
 与订单分类一样，关闭后清理该类待播内容，重新开启不补播旧事件，不影响游戏端采集。
 这些提醒不受普通反馈的 20 秒冷却和最后 35 秒限制。
 
-厨房提示独立放在 `kitchen.py`：火情和快糊优先于订单反馈，煮好随后处理，普通搭话最后。
+厨房提示独立放在 `kitchen.py`：火情、快糊、快搅过头和搅坏优先于订单反馈，完成提示随后处理，普通搭话最后。
 火情和快糊等待约 0.3 秒合并同期对象，煮好等待约 0.8 秒；合并后用一句说明数量。
 紧急提示超过 2 秒、完成提示超过 5 秒会丢弃，避免播报已经处理的情况。
 端离加热区域、进入下一烹饪周期、烧糊、灭火、物体消失或关卡结束会清除对应待播提示。
 取消只影响插件尚未提交的提醒，已经交给宿主的语音不能撤回。
 实际提交厨房播报后也会延后普通搭话；不猜菜名、屏幕方位、玩家身份或剩余烧糊秒数。
+
+已对煮锅、炸锅、煎锅、烤箱、蒸笼和烧烤架进行联调。提醒依据游戏端对象状态，
+不代表所有关卡和设备变体均已验证；搅拌机使用下述独立事件。
 
 ### 搅拌提醒
 
@@ -184,100 +241,49 @@ node plugin/plugins/neko_sous/tests/test_panel.cjs
 ```
 
 界面测试使用插件管理器的开发依赖及 Playwright Chromium；也可设置
-`NEKO_SOUS_BROWSER_CHANNEL=chrome` 使用本机 Chrome。客户端测试使用本地模拟 WS 服务，
+`NEKO_SOUS_BROWSER_CHANNEL=chrome` 或 `msedge` 使用本机浏览器。客户端测试使用本地模拟 WS 服务，
 不要求启动游戏。实际游戏联调仍需运行游戏端 NekoSous。
 
 官方 Hosted UI 文档：[使用 Hosted TSX 构建插件界面](https://project-neko.online/zh-CN/plugins/hosted-ui)。
 
-## Development
+在插件仓库根目录运行与发布流程对应的代码检查：
 
-The plugin source and its Git repository live at:
-
-```text
-N.E.K.O/plugin/plugins/neko_sous
-```
-
-插件源码及其 Git 仓库直接位于：
-
-```text
-N.E.K.O/plugin/plugins/neko_sous
-```
-
-プラグインのソースと Git リポジトリは次の場所にあります：
-
-```text
-N.E.K.O/plugin/plugins/neko_sous
-```
-
-When publishing to the plugin market, use this GitHub repository name:
-
-发布到插件市场时，请使用以下 GitHub 仓库名：
-
-プラグインマーケットへ公開する際は、次の GitHub リポジトリ名を使用してください：
-
-```text
-n.e.k.o_plugin_neko_sous
-```
-
-From this plugin repository root:
-
-```bash
+```powershell
 uvx ruff==0.12.4 check --ignore-noqa --config ruff.toml .
 ```
 
-From the N.E.K.O repository root / 在 N.E.K.O 仓库根目录中 / N.E.K.O リポジトリのルートで：
+在 N.E.K.O 根目录运行完整本地发布检查（不会发布）：
 
-```bash
-uv run neko-plugin sync neko_sous --clean
-uv run neko-plugin check neko_sous
+```powershell
 uv run neko-plugin check -r neko_sous
 ```
 
-Python runtime dependencies are declared in `pyproject.toml` and synced into
-`vendor/` for packaging. The generated `vendor/` directory is not committed;
-local builds and CI recreate it before release checks.
+运行时依赖仅为 `websockets~=15.0.1`；`plugin` 是宿主 SDK，不要安装同名第三方包。
+`vendor/` 由 CLI 生成，不提交 Git；依赖变更后重新同步。
 
-Python 运行时依赖声明在 `pyproject.toml` 中，并在打包时同步到 `vendor/`。
-生成的 `vendor/` 不提交；本地构建和 CI 会在发布检查前重新生成它。
+## 常见问题与日志
 
-Python ランタイム依存関係は `pyproject.toml` に宣言し、パッケージ化時に
-`vendor/` へ同期します。生成された `vendor/` はコミットせず、ローカルビルドと
-CI が公開前チェックで再生成します。
+- 游戏已启动但连接失败：检查游戏端加载日志、依赖 DLL 和监听地址，确认端口仍为 48930。
+- 提示已有客户端：关闭其他调试客户端或重复运行的插件实例后重试。
+- 已连接但没有声音：检查总订阅、分类开关、服务端能力及 N.E.K.O 模型与语音配置。
+- 提醒晚了或未播出：可能是模型排队、本地提示已失效或被合并，需要结合两端日志判断。
+- 进程检测不可用：查看客户端日志中的系统错误，当前只支持 Windows 进程检测。
 
-## Market release / Market 发布 / Market 公開
+游戏端日志为游戏目录下的 `BepInEx/LogOutput.log`；客户端日志位于 N.E.K.O 日志目录中
+`neko_sous` 对应文件，具体路径以宿主设置为准。已提交给宿主的消息无法撤回，
+本地取消只影响尚未提交的提醒，不能保证每次事件都立即生成和播放语音。
 
-Publish the version declared in `plugin.toml`. By default this pushes the Git
-tag, waits for the standard GitHub Release, and notifies the plugin market.
+## 发布说明
 
-发布 `plugin.toml` 中声明的版本。默认会推送 Git tag、等待标准 GitHub
-Release，然后通知插件市场。
+市场发布使用公开 GitHub 仓库，命名为 `n.e.k.o_plugin_neko_sous`，保留标准
+`verify.yml` 和 `release.yml`。首次发布需先推送源码、通过 Verify 并完成市场首次审核。
+后续每个版本使用未发布过的版本号，先检查、提交并推送源码，再执行发布。
 
-`plugin.toml` で宣言されたバージョンを公開します。既定では Git tag を
-push し、標準 GitHub Release を待ってからプラグインマーケットへ通知します。
+下面的命令会实际推送版本标签、生成 GitHub Release 并通知市场，仅在准备好发布时运行：
 
-```bash
+```powershell
 uv run neko-plugin publish neko_sous
 ```
 
-To run only one half explicitly / 如需仅执行一部分 / 一方のみを実行する場合:
-
-```bash
-uv run neko-plugin publish github neko_sous
-uv run neko-plugin publish market https://github.com/owner/repo/releases/tag/v0.1.0
-```
-
-The generated `.github/workflows/release.yml` builds and uploads
-`neko_sous.neko-plugin`. The market independently verifies that Release
-before publishing it.
-
-生成的 `.github/workflows/release.yml` 会构建并上传插件包；Market 会独立验证
-该 Release 后再发布。
-
-生成された `.github/workflows/release.yml` がプラグインパッケージをビルドして
-アップロードし、Market はその Release を独立検証してから公開します。
-
-## Entry
-
-```toml
-entry = "plugin.plugins.neko_sous:NekoSousPlugin"
-```
+如需 beta 渠道或手动填写更新说明，按官方文档先生成 GitHub Release，再在市场选择渠道。
+beta 转正式版需使用新的版本号。完整步骤见[官方发布文档](https://project-neko.online/zh-CN/plugins/cli)。
